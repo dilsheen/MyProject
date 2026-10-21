@@ -1,0 +1,138 @@
+I have ~3 hours to build and deploy a REST API (Java/Spring Boot) to DigitalOcean.
+
+Unknown domain. I need a plan, not code.
+
+Constraints:
+- Must ingest data, process it, and expose at least one query endpoint
+- Postgres, Docker, env-based config
+- Health/readiness, validation, structured errors, tests
+- No UI, no Kafka, no Redis unless required
+
+Ask me the clarifying questions I should ask the practiceer.
+Then give a 3-hour sequenced plan:
+1) skeleton files
+2) API contract (example JSON)
+3) processing rules
+4) tests
+5) deploy checklist
+
+Keep the first implementation slice small enough to finish in 30 minutes.
+
+Context: 3-hour practice drill. Java 21, Spring Boot 3, Maven.
+I will add an Event Ingest API later. Do not implement /v1/events yet.
+
+Build a deployable skeleton in this repo (replace the placeholder src/Main.java).
+
+Requirements:
+- Packages: api, service, domain, repo, config under com.dilsheen.ingest
+- GET /health → 200 {"status":"up"} with no database call
+- GET /ready → 200 if Postgres is reachable, else 503 {"status":"not_ready"}
+- Config from env: PORT, DATABASE_URL, LOG_LEVEL
+- JSON errors for 400/404/500 in this shape:
+  { "error": "...", "message": "...", "details": [] }
+- Request id: accept X-Request-Id or generate one; echo it on the response; include it in logs
+- Dockerfile (multi-stage) exposing PORT
+- docker-compose.yml with the app + Postgres
+- One test: GET /health returns 200
+
+Done when:
+- mvn test passes
+- I can run docker compose up --build and curl localhost:8080/health
+
+Do not add extra dependencies (no Redis, Kafka, security, UI).
+Show me the file list first, then implement.
+
+Add POST /v1/events only, on the existing skeleton.
+
+Request JSON:
+{ "eventId": "e-100", "type": "click", "occurredAt": "2026-10-21T11:00:00Z", "value": 1.5 }
+
+Rules:
+- validate eventId, type (non-blank), occurredAt (ISO-8601); value optional number
+- store occurredAt in UTC
+- persist to Postgres (create table/schema as needed)
+- same eventId: return 200 with the existing row; new: 201
+- 400 uses existing ErrorResponse shape
+
+Do not add batch or stats.
+Done when: mvn test covers happy path, invalid occurredAt, and duplicate eventId.
+
+
+
+
+One-page contract
+Event
+
+
+{
+  "eventId": "e-100",
+  "type": "click",
+  "occurredAt": "2026-10-21T11:00:00Z",
+  "value": 1.5
+}
+eventId: required, client-supplied unique id
+type: required, non-blank
+occurredAt: required, ISO-8601; store as UTC
+value: optional number
+Endpoints
+
+GET /health → 200 {"status":"up"} (no DB)
+GET /ready → 200 if Postgres is up, else 503
+POST /v1/events → create or return existing
+POST /v1/events:batch → { "events": [ ... ] }, max 100
+GET /v1/events/{eventId}
+GET /v1/stats?from=&to=&type= → count + sum(value) in the window
+Status codes
+
+200 duplicate (idempotent replay)
+201 new event
+200 batch: { "accepted": [...], "rejected": [{ "eventId", "reason" }] }
+400 invalid JSON / validation
+404 unknown event
+500 unexpected; JSON error, no stack trace in the body
+Error shape
+
+
+{
+  "error": "validation_failed",
+  "message": "occurredAt must be ISO-8601",
+  "details": [{ "field": "occurredAt", "issue": "invalid_format" }]
+}
+Batch rules
+
+Invalid rows go in rejected; valid rows are stored
+Duplicate eventId in the batch (or already stored) counts as accepted (idempotent), not rejected
+Empty events array → 400
+Env
+
+PORT (default 8080)
+DATABASE_URL (jdbc:postgresql://... or postgresql://... — pick one and stick to it)
+LOG_LEVEL (default INFO)
+
+
+
+Context: existing Spring Boot ingest API. Do not add features or redo /health, /ready, or /v1/events.
+
+Goal: connect the running app to DigitalOcean managed Postgres using env only.
+
+Facts:
+- Cloud DB is a separate host. We get a connection string, not a local container name.
+- Env var: DATABASE_URL
+  Example: postgresql://USER:PASSWORD@HOST:PORT/DATABASE?sslmode=require
+- Also accept jdbc:postgresql://HOST:PORT/DATABASE?sslmode=require plus DATABASE_USER / DATABASE_PASSWORD
+- Keep query params (sslmode, etc.) on the JDBC URL
+- Do not put secrets in application.yml, Dockerfile, or git
+- App must still start if DB is down (Hikari initializationFailTimeout -1)
+- GET /health stays 200 with no DB call
+- GET /ready is 200 only if a real Postgres ping succeeds, else 503
+- schema.sql / CREATE TABLE IF NOT EXISTS still runs against this DATABASE_URL
+
+Out of scope:
+- New endpoints, Redis, Kafka, UI, custom SSL cert files unless the driver needs them
+- DigitalOcean console clicks (I will paste DATABASE_URL myself)
+
+Done when:
+- Parsing postgresql://... and jdbc:... both produce a usable DataSource
+- sslmode=require is preserved
+- You show the exact env vars to set on App Platform / Droplet
+- mvn test still passes
